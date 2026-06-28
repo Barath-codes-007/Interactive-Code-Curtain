@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Balanced Interactive Curtain</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #f4f4f4;
+            color: #111;
+            font-family: monospace;
+        }
+        canvas {
+            display: block;
+        }
+        #start-prompt {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 15px 30px;
+            border-radius: 8px;
+            pointer-events: none;
+            transition: opacity 0.5s;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <div id="start-prompt">Click anywhere to enable loud sound, then sweep your mouse!</div>
+    <canvas id="canvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        // --- BALANCED CONFIG: Heavier but still interactive ---
+        const CONFIG = {
+            gravity: 0.6,      // Increased for more weight
+            friction: 0.96,    // Strings settle faster
+            fontSize: 16,
+            spacingX: 20,
+            spacingY: 15,
+            mouseRadius: 100,  // Good size to grab multiple lines
+            mouseForce: 0.4    // Resists the mouse more than the lightweight version
+        };
+
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        const sourceText = "function simulateCurtain() { const physics = new Verlet(); let interact = true; return beautifulCode; }".replace(/\s+/g, "");
+
+        // --- AUDIO SETUP: Louder ---
+        let audioCtx;
+        let lastPluckTime = 0;
+        let soundEnabled = false;
+
+        window.addEventListener('mousedown', () => {
+            if (!soundEnabled) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                soundEnabled = true;
+                document.getElementById('start-prompt').style.opacity = '0';
+            }
+        });
+
+        function playPluckSound(intensity, mouseSpeed) {
+            if (!soundEnabled || !audioCtx) return;
+            
+            const now = Date.now();
+            if (now - lastPluckTime < 30) return; 
+            lastPluckTime = now;
+
+            const baseFreq = 150 + (Math.random() * 50) + (mouseSpeed * 5); 
+
+            const osc1 = audioCtx.createOscillator();
+            osc1.type = 'triangle';
+            osc1.frequency.setValueAtTime(baseFreq, audioCtx.currentTime);
+
+            const osc2 = audioCtx.createOscillator();
+            osc2.type = 'sine';
+            osc2.frequency.setValueAtTime(baseFreq * 2.01, audioCtx.currentTime);
+
+            const masterGain = audioCtx.createGain();
+            
+            osc1.connect(masterGain);
+            osc2.connect(masterGain);
+            masterGain.connect(audioCtx.destination);
+            
+            // SIGNIFICANTLY INCREASED VOLUME
+            const maxVol = Math.min(intensity * 1.5, 1.2); 
+            masterGain.gain.setValueAtTime(0, audioCtx.currentTime);
+            masterGain.gain.linearRampToValueAtTime(maxVol, audioCtx.currentTime + 0.01);
+            masterGain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.5);
+            
+            osc1.start(audioCtx.currentTime);
+            osc2.start(audioCtx.currentTime);
+            osc1.stop(audioCtx.currentTime + 0.5);
+            osc2.stop(audioCtx.currentTime + 0.5);
+        }
+
+        // --- MOUSE TRACKING ---
+        const mouse = { x: -1000, y: -1000, vx: 0, vy: 0 };
+        let lastMouse = { x: -1000, y: -1000 };
+
+        window.addEventListener('mousemove', (e) => {
+            lastMouse.x = mouse.x;
+            lastMouse.y = mouse.y;
+            mouse.x = e.clientX;
+            mouse.y = e.clientY;
+            mouse.vx = mouse.x - lastMouse.x;
+            mouse.vy = mouse.y - lastMouse.y;
+        });
+
+        // --- PHYSICS SYSTEM ---
+        class Particle {
+            constructor(x, y, char, isPinned) {
+                this.pos = { x: x, y: y };
+                this.oldPos = { x: x, y: y };
+                this.char = char;
+                this.isPinned = isPinned;
+                this.pinX = x;
+                this.pinY = y;
+            }
+
+            update() {
+                if (this.isPinned) {
+                    this.pos.x = this.pinX;
+                    this.pos.y = this.pinY;
+                    return;
+                }
+
+                let vx = (this.pos.x - this.oldPos.x) * CONFIG.friction;
+                let vy = (this.pos.y - this.oldPos.y) * CONFIG.friction;
+
+                this.oldPos.x = this.pos.x;
+                this.oldPos.y = this.pos.y;
+
+                this.pos.x += vx;
+                this.pos.y += vy + CONFIG.gravity;
+
+                let dx = this.pos.x - mouse.x;
+                let dy = this.pos.y - mouse.y;
+                let dist = Math.sqrt(dx * dx + dy * dy);
+
+                if (dist < CONFIG.mouseRadius) {
+                    let force = (CONFIG.mouseRadius - dist) / CONFIG.mouseRadius;
+                    
+                    this.pos.x += (dx / dist) * force * 3;
+                    this.pos.y += (dy / dist) * force * 3;
+                    
+                    this.pos.x += mouse.vx * CONFIG.mouseForce;
+                    this.pos.y += mouse.vy * CONFIG.mouseForce;
+
+                    let mouseSpeed = Math.abs(mouse.vx) + Math.abs(mouse.vy);
+                    if (mouseSpeed > 2) { 
+                        playPluckSound(force, mouseSpeed);
+                    }
+                }
+            }
+        }
+
+        class Link {
+            constructor(p1, p2, distance) {
+                this.p1 = p1;
+                this.p2 = p2;
+                this.distance = distance;
+            }
+
+            resolve() {
+                let dx = this.p1.pos.x - this.p2.pos.x;
+                let dy = this.p1.pos.y - this.p2.pos.y;
+                let d = Math.sqrt(dx * dx + dy * dy);
+                
+                if (d === 0) return;
+
+                let difference = (this.distance - d) / d;
+                let offsetX = dx * difference * 0.5;
+                let offsetY = dy * difference * 0.5;
+
+                if (!this.p1.isPinned) {
+                    this.p1.pos.x += offsetX;
+                    this.p1.pos.y += offsetY;
+                }
+                if (!this.p2.isPinned) {
+                    this.p2.pos.x -= offsetX;
+                    this.p2.pos.y -= offsetY;
+                }
+            }
+        }
+
+        const particles = [];
+        const links = [];
+
+        function createCurtain() {
+            let cols = Math.floor(canvas.width / CONFIG.spacingX) + 1;
+            let rows = Math.floor(canvas.height / CONFIG.spacingY) + 5;
+            let charIndex = 0;
+
+            for (let i = 0; i < cols; i++) {
+                let prevParticle = null;
+                for (let j = 0; j < rows; j++) {
+                    let x = i * CONFIG.spacingX;
+                    let y = j * CONFIG.spacingY;
+                    let char = sourceText[charIndex % sourceText.length];
+                    charIndex++;
+
+                    let isPinned = (j === 0);
+                    let p = new Particle(x, y, char, isPinned);
+                    particles.push(p);
+
+                    if (prevParticle) {
+                        links.push(new Link(prevParticle, p, CONFIG.spacingY));
+                    }
+                    prevParticle = p;
+                }
+            }
+        }
+
+        function animate() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.font = `bold ${CONFIG.fontSize}px monospace`;
+            ctx.fillStyle = '#333';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+
+            mouse.vx *= 0.6;
+            mouse.vy *= 0.6;
+
+            for (let p of particles) {
+                p.update();
+            }
+
+            for (let i = 0; i < 3; i++) {
+                for (let l of links) {
+                    l.resolve();
+                }
+            }
+
+            for (let p of particles) {
+                ctx.fillText(p.char, p.pos.x, p.pos.y);
+            }
+
+            requestAnimationFrame(animate);
+        }
+
+        createCurtain();
+        animate();
+
+        window.addEventListener('resize', () => {
+            location.reload(); 
+        });
+    </script>
+</body>
+</html>
