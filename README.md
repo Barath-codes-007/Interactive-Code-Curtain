@@ -15,9 +15,6 @@ A beautiful physics-based interactive code curtain built using **HTML5 Canvas**,
 ![Interactive Code Curtain](screenshot.png)
 
 ---
-## 📸 Demo
-
-![Demo](demo.gif)
 
 ## ✨ Features
 
